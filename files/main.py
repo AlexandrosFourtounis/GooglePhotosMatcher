@@ -63,7 +63,6 @@ def mainProcess(browserPath, window, editedW):
                     # Check if image needs conversion (e.g., RGBA, P mode, or other non-RGB modes)
                     im = Image.open(filepath)
                     needs_conversion = im.mode not in ('RGB', 'L')
-                    original_format = im.format
                     im.close()
                     
                     # Only convert and re-save if necessary

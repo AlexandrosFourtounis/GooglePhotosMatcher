@@ -198,6 +198,7 @@ def set_EXIF(filepath, lat, lng, altitude, timeStamp):
 
 def set_video_metadata(filepath, lat, lng, altitude, timeStamp):
     """Set metadata for video files using ffmpeg if available"""
+    temp_filepath = None  # Initialize to avoid NameError in cleanup
     try:
         # Check if ffmpeg is available
         if not shutil.which('ffmpeg'):
@@ -218,8 +219,8 @@ def set_video_metadata(filepath, lat, lng, altitude, timeStamp):
             '-metadata', f'date={dateTime}',
         ]
         
-        # Add GPS coordinates as metadata if available
-        if lat is not None and lng is not None:
+        # Add GPS coordinates as metadata if available (check for non-zero values)
+        if lat != 0 and lng != 0:
             cmd.extend([
                 '-metadata', f'location={lat:+.6f}{lng:+.6f}/',
                 '-metadata', f'location-eng={lat:+.6f}{lng:+.6f}/',
@@ -243,12 +244,12 @@ def set_video_metadata(filepath, lat, lng, altitude, timeStamp):
             
     except subprocess.TimeoutExpired:
         print("ffmpeg timeout")
-        if os.path.exists(temp_filepath):
+        if temp_filepath and os.path.exists(temp_filepath):
             os.remove(temp_filepath)
         return False
     except Exception as e:
         print(f"Error setting video metadata: {str(e)}")
-        if os.path.exists(temp_filepath):
+        if temp_filepath and os.path.exists(temp_filepath):
             os.remove(temp_filepath)
         return False
 
