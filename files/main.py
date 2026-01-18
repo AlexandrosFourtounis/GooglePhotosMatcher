@@ -5,6 +5,7 @@ import PySimpleGUI as sg
 
 def mainProcess(browserPath, window, editedW):
     piexifCodecs = [k.casefold() for k in ['TIF', 'TIFF', 'JPEG', 'JPG']]
+    videoCodecs = [k.casefold() for k in ['MP4', 'MOV', 'AVI', 'MKV', 'M4V', 'MPG', 'MPEG', '3GP', 'WMV', 'FLV', 'WEBM']]
 
     mediaMoved = []  # array with names of all the media already matched
     path = browserPath  # source path
@@ -54,17 +55,26 @@ def mainProcess(browserPath, window, editedW):
             timeStamp = int(data['photoTakenTime']['timestamp'])  # Get creation time
             print(filepath)
 
-            if title.rsplit('.', 1)[1].casefold() in piexifCodecs:  # If EXIF is supported
+            # Get file extension
+            file_ext = title.rsplit('.', 1)[1].casefold() if '.' in title else ''
+
+            if file_ext in piexifCodecs:  # If EXIF is supported
                 try:
+                    # Check if image needs conversion (e.g., RGBA, P mode, or other non-RGB modes)
                     im = Image.open(filepath)
+                    needs_conversion = im.mode not in ('RGB', 'L')
                     im.close()
-                    rgb_im = im.convert('RGB')
-                    os.replace(filepath, filepath.rsplit('.', 1)[0] + ".jpg")
-                    filepath = filepath.rsplit('.', 1)[0] + ".jpg"
-                    rgb_im.save(filepath)
+                    
+                    # Only convert and re-save if necessary
+                    if needs_conversion:
+                        im = Image.open(filepath)
+                        rgb_im = im.convert('RGB')
+                        im.close()
+                        # Save with high quality (95) to minimize quality loss
+                        rgb_im.save(filepath, quality=95, optimize=False)
 
                 except ValueError as e:
-                    print("Error converting to JPG in " + title)
+                    print("Error processing image " + title)
                     errorCounter += 1
                     continue
 
@@ -76,6 +86,17 @@ def mainProcess(browserPath, window, editedW):
                     print(str(e))
                     errorCounter += 1
                     continue
+
+            elif file_ext in videoCodecs:  # Handle video files
+                try:
+                    # Try to set video metadata using ffmpeg
+                    lat = data.get('geoData', {}).get('latitude', 0)
+                    lng = data.get('geoData', {}).get('longitude', 0)
+                    altitude = data.get('geoData', {}).get('altitude', 0)
+                    set_video_metadata(filepath, lat, lng, altitude, timeStamp)
+                except Exception as e:
+                    print(f"Could not set video metadata for {title}: {str(e)}")
+                    # Continue anyway - at least set file timestamps
 
             setWindowsTime(filepath, timeStamp) #Windows creation and modification time
 

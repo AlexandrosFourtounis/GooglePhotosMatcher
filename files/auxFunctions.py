@@ -4,58 +4,108 @@ from datetime import datetime
 import piexif
 from win32_setctime import setctime
 from fractions import Fraction
+import subprocess
+import shutil
 
 
 # Function to search media associated to the JSON
 def searchMedia(path, title, mediaMoved, nonEdited, editedWord):
-    title = fixTitle(title)
-    realTitle = str(title.rsplit('.', 1)[0] + "-" + editedWord + "." + title.rsplit('.', 1)[1])
-    filepath = path + "\\" + realTitle  # First we check if exists an edited version of the image
-    if not os.path.exists(filepath):
-        realTitle = str(title.rsplit('.', 1)[0] + "(1)." + title.rsplit('.', 1)[1])
-        filepath = path + "\\" + realTitle  # First we check if exists an edited version of the image
-        if not os.path.exists(filepath) or os.path.exists(path + "\\" + title + "(1).json"):
-            realTitle = title
-            filepath = path + "\\" + realTitle  # If not, check if exists the path with the same name
-            if not os.path.exists(filepath):
-                realTitle = checkIfSameName(title, title, mediaMoved, 1)  # If not, check if exists the path to the same name adding (1), (2), etc
-                filepath = str(path + "\\" + realTitle)
-                if not os.path.exists(filepath):
-                    title = (title.rsplit('.', 1)[0])[:47] + "." + title.rsplit('.', 1)[1]  # Sometimes title is limited to 47 characters, check also that
-                    realTitle = str(title.rsplit('.', 1)[0] + "-editado." + title.rsplit('.', 1)[1])
-                    filepath = path + "\\" + realTitle
-                    if not os.path.exists(filepath):
-                        realTitle = str(title.rsplit('.', 1)[0] + "(1)." + title.rsplit('.', 1)[1])
-                        filepath = path + "\\" + realTitle
-                        if not os.path.exists(filepath):
-                            realTitle = title
-                            filepath = path + "\\" + realTitle
-                            if not os.path.exists(filepath):
-                                realTitle = checkIfSameName(title, title, mediaMoved, 1)
-                                filepath = path + "\\" + realTitle
-                                if not os.path.exists(filepath):  # If path not found, return null
-                                    realTitle = None
-                        else:
-                            filepath = path + "\\" + title  # Move original media to another folder
-                            os.replace(filepath, nonEdited + "\\" + title)
-                    else:
-                        filepath = path + "\\" + title  # Move original media to another folder
-                        os.replace(filepath, nonEdited + "\\" + title)
-        else:
-            filepath = path + "\\" + title  # Move original media to another folder
-            os.replace(filepath, nonEdited + "\\" + title)
-    else:
-        filepath = path + "\\" + title  # Move original media to another folder
-        os.replace(filepath, nonEdited + "\\" + title)
+    """
+    Search for media file matching the JSON metadata.
+    Tries multiple patterns in order of likelihood.
+    """
+    original_title = fixTitle(title)
+    
+    # Check if file has an extension
+    if '.' not in original_title:
+        return None
+    
+    name_part = original_title.rsplit('.', 1)[0]
+    ext_part = original_title.rsplit('.', 1)[1]
+    
+    # List of patterns to try, in order of priority
+    patterns_to_try = []
+    
+    # 1. Edited versions with custom suffix (e.g., "photo-editado.jpg")
+    patterns_to_try.append((f"{name_part}-{editedWord}.{ext_part}", True))  # True = has original
+    
+    # 2. Common Google Photos patterns for duplicates
+    patterns_to_try.append((f"{name_part}(1).{ext_part}", False))
+    
+    # 3. Exact match
+    patterns_to_try.append((original_title, False))
+    
+    # 4. Check for numbered duplicates (2) through (10)
+    for i in range(2, 11):
+        patterns_to_try.append((f"{name_part}({i}).{ext_part}", False))
+    
+    # 5. Truncated filename (Google Photos sometimes limits to 47 chars)
+    if len(name_part) > 47:
+        truncated_name = name_part[:47]
+        patterns_to_try.append((f"{truncated_name}-{editedWord}.{ext_part}", True))
+        patterns_to_try.append((f"{truncated_name}(1).{ext_part}", False))
+        patterns_to_try.append((f"{truncated_name}.{ext_part}", False))
+        for i in range(2, 11):
+            patterns_to_try.append((f"{truncated_name}({i}).{ext_part}", False))
+    
+    # 6. Check for edited version with default "editado" suffix if custom suffix was provided
+    if editedWord != "editado":
+        patterns_to_try.append((f"{name_part}-editado.{ext_part}", True))
+        if len(name_part) > 47:
+            truncated_name = name_part[:47]
+            patterns_to_try.append((f"{truncated_name}-editado.{ext_part}", True))
+    
+    # Try each pattern
+    for pattern, has_original in patterns_to_try:
+        filepath = os.path.join(path, pattern)
+        
+        # Skip if this would be a duplicate JSON match
+        if pattern.endswith(f"(1).{ext_part}"):
+            json_filepath = os.path.join(path, f"{original_title}(1).json")
+            if os.path.exists(json_filepath):
+                continue
+        
+        if os.path.exists(filepath):
+            # If this is an edited version, move the original to EditedRaw
+            if has_original:
+                original_filepath = os.path.join(path, original_title)
+                if os.path.exists(original_filepath):
+                    try:
+                        os.replace(original_filepath, os.path.join(nonEdited, original_title))
+                    except Exception as e:
+                        print(f"Could not move original file {original_title}: {str(e)}")
+            
+            return pattern
+    
+    # Last resort: check if filename already processed
+    if original_title in mediaMoved:
+        return checkIfSameName(original_title, original_title, mediaMoved, 1)
+    
+    return None
 
-    return str(realTitle)
 
-
-# Supress incompatible characters
+# Suppress incompatible characters while preserving valid ones
 def fixTitle(title):
-    return str(title).replace("%", "").replace("<", "").replace(">", "").replace("=", "").replace(":", "").replace("?","").replace(
-        "¿", "").replace("*", "").replace("#", "").replace("&", "").replace("{", "").replace("}", "").replace("\\", "").replace(
-        "@", "").replace("!", "").replace("¿", "").replace("+", "").replace("|", "").replace("\"", "").replace("\'", "")
+    """
+    Remove characters that are invalid in Windows filenames.
+    More conservative approach - only removes truly problematic characters.
+    """
+    # Windows forbidden characters: < > : " / \ | ? *
+    # Also remove some other problematic chars
+    forbidden_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
+    
+    result = str(title)
+    for char in forbidden_chars:
+        result = result.replace(char, '')
+    
+    # Remove other potentially problematic characters
+    # but be more selective to preserve international characters
+    result = result.replace('\x00', '')  # null character
+    
+    # Trim leading/trailing spaces and dots (Windows doesn't allow these at the end)
+    result = result.strip(' .')
+    
+    return result
 
 # Recursive function to search name if its repeated
 def checkIfSameName(title, titleFixed, mediaMoved, recursionTime):
@@ -144,5 +194,63 @@ def set_EXIF(filepath, lat, lng, altitude, timeStamp):
     except Exception as e:
         print("Coordinates not settled")
         pass
+
+
+def set_video_metadata(filepath, lat, lng, altitude, timeStamp):
+    """Set metadata for video files using ffmpeg if available"""
+    temp_filepath = None  # Initialize to avoid NameError in cleanup
+    try:
+        # Check if ffmpeg is available
+        if not shutil.which('ffmpeg'):
+            print("ffmpeg not found, skipping video metadata embedding")
+            return False
+        
+        # Create temporary output file
+        temp_filepath = filepath + ".tmp"
+        
+        # Format datetime for video metadata
+        dateTime = datetime.fromtimestamp(timeStamp).strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Build ffmpeg command to copy stream without re-encoding and add metadata
+        cmd = [
+            'ffmpeg', '-i', filepath,
+            '-c', 'copy',  # Copy streams without re-encoding
+            '-metadata', f'creation_time={dateTime}',
+            '-metadata', f'date={dateTime}',
+        ]
+        
+        # Add GPS coordinates as metadata if available (check for non-zero values)
+        if lat != 0 and lng != 0:
+            cmd.extend([
+                '-metadata', f'location={lat:+.6f}{lng:+.6f}/',
+                '-metadata', f'location-eng={lat:+.6f}{lng:+.6f}/',
+            ])
+        
+        cmd.extend(['-y', temp_filepath])  # -y to overwrite output file
+        
+        # Run ffmpeg
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            # Replace original file with the new one
+            os.replace(temp_filepath, filepath)
+            return True
+        else:
+            print(f"ffmpeg error: {result.stderr}")
+            # Clean up temp file if it exists
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print("ffmpeg timeout")
+        if temp_filepath and os.path.exists(temp_filepath):
+            os.remove(temp_filepath)
+        return False
+    except Exception as e:
+        print(f"Error setting video metadata: {str(e)}")
+        if temp_filepath and os.path.exists(temp_filepath):
+            os.remove(temp_filepath)
+        return False
 
 
